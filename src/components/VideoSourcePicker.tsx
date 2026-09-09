@@ -49,7 +49,7 @@ export function VideoSourcePicker({ slot }: { slot: 1 | 2 }) {
           <div style={{
             width: 16, height: 16,
             backgroundColor: 'rgba(255,255,255,0.95)',
-            WebkitMaskImage: 'url(/link_icon.png)', maskImage: 'url(/link_icon.png)',
+            WebkitMaskImage: `url(${import.meta.env.BASE_URL}link_icon.png)`, maskImage: `url(${import.meta.env.BASE_URL}link_icon.png)`,
             WebkitMaskSize: 'contain', maskSize: 'contain',
             WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat',
             WebkitMaskPosition: 'center', maskPosition: 'center',

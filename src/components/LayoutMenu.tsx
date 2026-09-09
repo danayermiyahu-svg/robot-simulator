@@ -62,7 +62,7 @@ export function LayoutMenu() {
         className="w-10 h-10 bg-black/70 hover:bg-black/90 backdrop-blur-sm rounded-lg transition-all duration-200 shadow-lg flex items-center justify-center overflow-hidden"
         title="פריסת מסך"
       >
-        <img src="/Layout.png" alt="Layout Menu" className="w-7 h-7 object-contain" />
+        <img src={`${import.meta.env.BASE_URL}Layout.png`} alt="Layout Menu" className="w-7 h-7 object-contain" />
       </button>
 
       {isOpen && (

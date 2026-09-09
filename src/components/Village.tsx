@@ -561,7 +561,7 @@ export function DesertVillage({ visualsOnly = false }: { visualsOnly?: boolean }
 
 /* ---------- קומפוננטת הדמות עם המשגר ---------- */
 function RocketMan() {
-  const model = useGLTF('/manwithrocket.glb');
+  const model = useGLTF(`${import.meta.env.BASE_URL}manwithrocket.glb`);
 
   // ===== ערכי כוונון — שני אלה תשני עד שהדמות תשב מושלם =====
   const POS: [number, number, number] = [-49.1, 1.3, -103.4]; // מיקום: X, גובה(Y), Z
@@ -578,7 +578,7 @@ function RocketMan() {
 
 /* ---------- קומפוננטת הדחליל (מטרת הטעיה) ---------- */
 function Scarecrow() {
-  const model = useGLTF('/scarecrow.glb');
+  const model = useGLTF(`${import.meta.env.BASE_URL}scarecrow.glb`);
 
   // ===== ערכי כוונון — שני אלה עד שהדחליל יישב מושלם =====
   const POS: [number, number, number] = [-46.5, 1.3, -83.9]; // מיקום: X, גובה(Y), Z

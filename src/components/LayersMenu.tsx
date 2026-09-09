@@ -70,7 +70,7 @@ export function LayersMenu({ layers, setLayers }: LayersMenuProps) {
         className="w-10 h-10 bg-black/70 hover:bg-black/90 backdrop-blur-sm rounded-lg transition-all duration-200 shadow-lg flex items-center justify-center overflow-hidden"
       >
         <img 
-          src="/Layers Button.png" 
+          src={`${import.meta.env.BASE_URL}Layers Button.png`} 
           alt="Layers Menu" 
           className="w-4.5 h-4.5 object-contain"
         />

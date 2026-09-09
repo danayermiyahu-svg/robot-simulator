@@ -93,7 +93,7 @@ export function MapLabels() {
   return (
     <>
       <FloatingIcon
-        url="/Mini_Robot_Top.png"
+        url={`${import.meta.env.BASE_URL}Mini_Robot_Top.png`}
         size={ROBOT_ICON_SIZE}
         getPos={() => {
           const b = robotBodyRef.current;
@@ -111,7 +111,7 @@ export function MapLabels() {
         }}
       />
       <FloatingGroup
-        url="/Drone.png"
+        url={`${import.meta.env.BASE_URL}Drone.png`}
         size={DRONE_ICON_SIZE}
         getPos={() => {
           const st = useTelemetryStore.getState();

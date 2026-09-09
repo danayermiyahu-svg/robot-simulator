@@ -860,7 +860,7 @@ export function World({ visualsOnly = false, practice = false, showHillOverlay =
     return elements;
   }, [visualsOnly, showHillOverlay, practice]);
 
-  const treeModel = useGLTF('/tree.glb');
+  const treeModel = useGLTF(`${import.meta.env.BASE_URL}tree.glb`);
 
   const trees = useMemo(() => {
     const elements = [];
@@ -899,10 +899,11 @@ export function World({ visualsOnly = false, practice = false, showHillOverlay =
     return elements;
   }, [visualsOnly, treeModel]);
 
+  const base = import.meta.env.BASE_URL;
   const [kurkarTex, grassTex, noiseTex] = useTexture([
-    '/kurkar.jpg', 
-    '/grass.jpg', 
-    '/noise.jpg'
+    `${base}kurkar.jpg`, 
+    `${base}grass.jpg`, 
+    `${base}noise.jpg`
   ]);
   
   [kurkarTex, grassTex, noiseTex].forEach(tex => {
