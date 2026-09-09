@@ -1,0 +1,6 @@
+{
+  "name": "2.8.26: Tracked Robot Simulator",
+  "description": "A 3D simulation of a tracked robot controlled from a first-person perspective.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
