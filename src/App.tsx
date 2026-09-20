@@ -14,6 +14,7 @@ import { World } from './components/World';
 import { InfoBar } from './components/InfoBar';
 import { LayersMenu } from './components/LayersMenu';
 import { LayoutMenu } from './components/LayoutMenu';
+import { SettingsMenu } from './components/SettingsMenu';
 import { ExperimentUI } from './components/ExperimentUI';
 import { DroneControls, DroneVisuals } from './components/Drone';
 import { VideoSourcePicker } from './components/VideoSourcePicker';
@@ -61,7 +62,6 @@ export default function App() {
     horizon: true,
     compass: true,
     path: false,
-    attitude: true,
     centerAttitude: true,
     predictive: true,
     hillOverlay: false,
@@ -367,7 +367,6 @@ export default function App() {
       symbology: true,
       compass: true,
       path: true,
-      attitude: true,
       centerAttitude: true,
       horizon: false,
     }));
@@ -388,7 +387,7 @@ export default function App() {
                 <VideoSourcePicker slot={2} />
                                 <DroneOffCover slot={2} />
                 {sym && (
-                  <InfoBar source={videoSlot2} showHorizon={layers.horizon} showCompass={layers.compass} showAttitude={layers.attitude} showCenterAttitude={layers.centerAttitude} scale={0.42} />
+                  <InfoBar source={videoSlot2} showHorizon={layers.horizon} showCompass={layers.compass} showCenterAttitude={layers.centerAttitude} scale={0.42} />
                 )}
               </div>
               <div
@@ -399,7 +398,7 @@ export default function App() {
                 <VideoSourcePicker slot={1} />
                                 <DroneOffCover slot={1} />
                 {sym && (
-                  <InfoBar source={videoSlot1} showHorizon={layers.horizon} showCompass={layers.compass} showAttitude={layers.attitude} showCenterAttitude={layers.centerAttitude} scale={0.42} />
+                  <InfoBar source={videoSlot1} showHorizon={layers.horizon} showCompass={layers.compass} showCenterAttitude={layers.centerAttitude} scale={0.42} />
                 )}
               </div>
             </div>
@@ -415,7 +414,7 @@ export default function App() {
               <VideoSourcePicker slot={1} />
                             <DroneOffCover slot={1} />
               {sym && (
-                <InfoBar source={videoSlot1} showHorizon={layers.horizon} showCompass={layers.compass} showAttitude={layers.attitude} showCenterAttitude={layers.centerAttitude} scale={0.6} />
+                <InfoBar source={videoSlot1} showHorizon={layers.horizon} showCompass={layers.compass} showCenterAttitude={layers.centerAttitude} scale={0.6} />
               )}
             </div>
             <div
@@ -426,7 +425,7 @@ export default function App() {
               <VideoSourcePicker slot={2} />
                             <DroneOffCover slot={2} />
               {sym && (
-                <InfoBar source={videoSlot2} showHorizon={layers.horizon} showCompass={layers.compass} showAttitude={layers.attitude} showCenterAttitude={layers.centerAttitude} scale={0.6} />
+                <InfoBar source={videoSlot2} showHorizon={layers.horizon} showCompass={layers.compass} showCenterAttitude={layers.centerAttitude} scale={0.6} />
               )}
             </div>
           </>
@@ -440,7 +439,7 @@ export default function App() {
               <VideoSourcePicker slot={2} />
                             <DroneOffCover slot={2} />
               {sym && (
-                <InfoBar source={videoSlot2} showHorizon={layers.horizon} showCompass={layers.compass} showAttitude={layers.attitude} showCenterAttitude={layers.centerAttitude} scale={0.6} />
+                <InfoBar source={videoSlot2} showHorizon={layers.horizon} showCompass={layers.compass} showCenterAttitude={layers.centerAttitude} scale={0.6} />
               )}
             </div>
             <div ref={view1Ref} className="flex-1 h-full relative rounded-sm overflow-hidden" />
@@ -450,11 +449,11 @@ export default function App() {
             <VideoSourcePicker slot={1} />
                         <DroneOffCover slot={1} />
             {sym && (
-              <InfoBar source={videoSlot1} showHorizon={layers.horizon} showCompass={layers.compass} showAttitude={layers.attitude} showCenterAttitude={layers.centerAttitude} scale={1} />
+              <InfoBar source={videoSlot1} showHorizon={layers.horizon} showCompass={layers.compass} showCenterAttitude={layers.centerAttitude} scale={1} />
             )}
             {/* מסך אימון + מצב ניהוג B + מסך מלא: רק שני הצלבים (המרכזי + המעוגל), בלי סימבולוגיה נוספת */}
             {!sym && steerMode === 'B' && videoSlot1 === 'robot' && (
-              <InfoBar source="robot" showHorizon={false} showCompass={false} showAttitude={false} showCenterAttitude={false} scale={1} />
+              <InfoBar source="robot" showHorizon={false} showCompass={false} showCenterAttitude={false} scale={1} />
             )}
           </div>
         )}
@@ -547,6 +546,7 @@ export default function App() {
 
       {(appPhase === 'training' || appPhase === 'session') && <LayersMenu layers={layers} setLayers={setLayers} />}
             {(appPhase === 'training' || appPhase === 'session') && <LayoutMenu />}
+      {(appPhase === 'training' || appPhase === 'session') && <SettingsMenu />}
       {/* כפתור מבט-על (PiP) — מתחת לכפתור השכבות, אותו גודל וסגנון */}
       {(appPhase === 'training' || appPhase === 'session') && (
         <button

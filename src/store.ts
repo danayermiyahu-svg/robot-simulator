@@ -113,6 +113,12 @@ interface TelemetryState {
   setDroneAim: (x: number, y: number) => void;
     droneYaw: number;
   setDroneYaw: (yaw: number) => void;
+  droneBodyPitch: number;                 // רדיאנים — הטיית גוף הרחפן מעלה/מטה (מצב ב', בזמן הדק)
+  setDroneBodyPitch: (p: number) => void;
+  droneFollowHeightOffset: number;        // מטרים — גובה הרחפן בפועל בצימוד (מרוכך, יחסית לגובה המעקב)
+  setDroneFollowHeightOffset: (v: number) => void;
+  droneFollowHeightTarget: number;        // מטרים — יעד הגובה שההאט מפקד (הערך בפועל זוחל אליו ברכוך)
+  setDroneFollowHeightTarget: (v: number) => void;
     droneLaunched: boolean;
   launchDrone: (dy?: number) => void;
   aimScreenX: number;
@@ -121,6 +127,18 @@ interface TelemetryState {
   setAimScreen: (x: number, y: number, visible: boolean) => void;
   steerMode: 'A' | 'B' | 'C';
   setSteerMode: (m: 'A' | 'B' | 'C') => void;
+  // --- הגדרות רגישות פרופיל ג'ויסטיקים גדולים ---
+  // חלות אך ורק על הג'ויסטיקים הגדולים (Thrustmaster וכו') בניהוג מצב א'.
+  stickDeadzone: number;     // אזור מת סביב המרכז (0..0.5)
+  stickSensitivity: number;  // הגבר כללי של תגובת הסטיק (0.2..2.0)
+  setStickDeadzone: (v: number) => void;
+  setStickSensitivity: (v: number) => void;
+  // --- הגדרות רגישות פרופיל שלט PlayStation (DualSense/DualShock) ---
+  // חלות אך ורק על שלט ה-PS בניהוג מצב א' — נפרד לגמרי מהג'ויסטיקים.
+  psDeadzone: number;
+  psSensitivity: number;
+  setPsDeadzone: (v: number) => void;
+  setPsSensitivity: (v: number) => void;
   setViewMode: (mode: ViewMode) => void;
         screenLayout: ScreenLayout;
   setScreenLayout: (layout: ScreenLayout) => void;
@@ -303,14 +321,21 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     const s = get();
     if (linked) {
       // ----- הפעלת צימוד (מעקב) -----
-      // מאפסים את כיוון הרחפן כך שישאף מיד להסתדר מאחורי הרובוט (מונע "עקום"/מלפנים)
-      let patch: any = { droneManual: false, droneYaw: 0 };
-      // בפריסות עם 2 חלוניות חוזי — מעבירים שליטה לחלונית שמציגה רובוט
+      // מאפסים את כיוון הרחפן כך שישאף מיד להסתדר מאחורי הרובוט (מונע "עקום"/מלפנים).
+      // נקודת המבט בצימוד: מצלמה מיושרת עם אף הרובוט (yaw=0) ומביטה מטה בזווית ‎-35°.
+      let patch: any = { droneManual: false, droneYaw: 0, droneBodyPitch: 0, droneFollowHeightOffset: 0, droneFollowHeightTarget: 0, droneGimbalYaw: 0, droneGimbalPitch: -10 };
+      // הצימוד תמיד מציג/מעביר שליטה לחוזי הרובוט — כי בצימוד נוהגים רק ברובוט.
       if (s.screenLayout === ScreenLayout.SPLIT_VIDEO_VIDEO) {
         patch.activePane = s.videoSlot1 === 'robot' ? 1 : 2;
       } else if (s.screenLayout === ScreenLayout.MAP_TWO_VIDEO) {
         // אזור 2 מציג slot2, אזור 3 מציג slot1
         patch.activePane = s.videoSlot2 === 'robot' ? 2 : 3;
+      } else if (s.screenLayout === ScreenLayout.FULL_VIDEO) {
+        // מסך מלא: מציגים את הרובוט
+        patch.videoSlot1 = 'robot'; patch.videoSlot2 = 'drone'; patch.activePane = 1;
+      } else if (s.screenLayout === ScreenLayout.SPLIT_VIDEO_MAP) {
+        // חצי מפה + חוזי (חלונית החוזי היא slot2): מציגים בה את הרובוט
+        patch.videoSlot2 = 'robot'; patch.videoSlot1 = 'drone'; patch.activePane = 2;
       }
       set(patch);
     } else {
@@ -328,6 +353,12 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   setDroneAim: (x, y) => set({ droneAimX: x, droneAimY: y }),
     droneYaw: 0,
   setDroneYaw: (yaw) => set({ droneYaw: yaw }),
+  droneBodyPitch: 0,
+  setDroneBodyPitch: (p) => set({ droneBodyPitch: p }),
+  droneFollowHeightOffset: 0,
+  setDroneFollowHeightOffset: (v) => set({ droneFollowHeightOffset: Math.max(-3, Math.min(36, v)) }),
+  droneFollowHeightTarget: 0,
+  setDroneFollowHeightTarget: (v) => set({ droneFollowHeightTarget: Math.max(-3, Math.min(36, v)) }),
   droneLaunched: false,
   // מעלה את הרחפן בהדרגה כל עוד לוחצים; ברגע שעולה מעל הרובוט הוא נחשב "הומרא".
   // dy = כמה לעלות בפריים הזה. התקרה נחסמת ע"י המתפעל (7.5 = ברירת המחדל).
@@ -357,6 +388,17 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   },
   steerMode: 'A',
   setSteerMode: (m) => set({ steerMode: m }),
+  // ברירות מחדל לרגישות הסטיקים (מתמידות — לא מתאפסות בין סשנים)
+  // פרופיל ג'ויסטיקים גדולים (ללא שינוי מברירת המחדל המקורית)
+  stickDeadzone: 0.07,
+  stickSensitivity: 1.0,
+  setStickDeadzone: (v) => set({ stickDeadzone: Math.max(0, Math.min(0.5, v)) }),
+  setStickSensitivity: (v) => set({ stickSensitivity: Math.max(0.2, Math.min(2.0, v)) }),
+  // פרופיל שלט PlayStation — ברירת מחדל: אזור מת 10%, רגישות 70%
+  psDeadzone: 0.10,
+  psSensitivity: 0.70,
+  setPsDeadzone: (v) => set({ psDeadzone: Math.max(0, Math.min(0.5, v)) }),
+  setPsSensitivity: (v) => set({ psSensitivity: Math.max(0.2, Math.min(2.0, v)) }),
         screenLayout: ScreenLayout.FULL_VIDEO,
   setScreenLayout: (layout) => {
     const s = get();

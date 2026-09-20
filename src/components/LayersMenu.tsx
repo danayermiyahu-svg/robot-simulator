@@ -10,7 +10,6 @@ interface LayersMenuProps {
     horizon: boolean;
     compass: boolean;
     path: boolean;
-    attitude: boolean;
     centerAttitude: boolean;
     predictive: boolean;
     hillOverlay: boolean;
@@ -21,7 +20,6 @@ interface LayersMenuProps {
     horizon: boolean;
     compass: boolean;
     path: boolean;
-    attitude: boolean;
     centerAttitude: boolean;
     predictive: boolean;
     hillOverlay: boolean;
@@ -51,7 +49,6 @@ export function LayersMenu({ layers, setLayers }: LayersMenuProps) {
         nextState.horizon = false;
         nextState.compass = nextVal;
         nextState.path = nextVal;
-        nextState.attitude = nextVal;
         nextState.centerAttitude = nextVal;
       }
 
@@ -153,16 +150,6 @@ export function LayersMenu({ layers, setLayers }: LayersMenuProps) {
               </div>
               
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between p-2 hover:bg-white/10 rounded transition-colors">
-                  <span className="text-sm text-gray-300">pitch & roll</span>
-                  <button 
-                    onClick={(e) => toggleLayer('attitude', e)}
-                    className={`w-10 h-5 rounded-full relative transition-colors ${layers.attitude ? 'bg-blue-500' : 'bg-gray-500'}`}
-                  >
-                    <div className={`w-4 h-4 bg-white rounded-full absolute top-0.5 transition-all ${layers.attitude ? 'right-5' : 'right-1'}`} />
-                  </button>
-                </div>
-
                 <div className="flex items-center justify-between p-2 hover:bg-white/10 rounded transition-colors">
                   <span className="text-sm text-gray-300">Center Indicator</span>
                   <button 

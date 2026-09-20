@@ -193,8 +193,31 @@ export function Robot({ hideVisuals = false }: { hideVisuals?: boolean }) {
     const btnsLeft = gpLeft?.buttons;
     const btnsRight = gpRight?.buttons;
 
-    const deadzone = 0.07;
+    // אזור-מת ורגישות נשלטים מתפריט ההגדרות (store) — פרופיל נפרד לכל סוג התקן.
+    const cfgStore = useTelemetryStore.getState();
+    // פרופיל ג'ויסטיקים גדולים (Thrustmaster וכו')
+    const jsCfg = { deadzone: cfgStore.stickDeadzone, sensitivity: cfgStore.stickSensitivity };
+    // פרופיל שלט PlayStation — נפרד לחלוטין (ברירת מחדל: אזור מת 10%, רגישות 70%)
+    const psCfg = { deadzone: cfgStore.psDeadzone, sensitivity: cfgStore.psSensitivity };
+    // זיהוי שלט PS לפי ה-id של ההתקן
+    const isPsPad = (p: Gamepad | null) =>
+      !!p && /dualsense|dualshock|wireless controller|054c|sony/i.test(p.id);
+    // בוחר את הפרופיל לפי סוג ההתקן שמניע את הזחל — כך הגדרות ה-PS חלות אך ורק על שלט PS
+    const cfgFor = (p: Gamepad | null) => (isPsPad(p) ? psCfg : jsCfg);
+    // אזור-מת לסטיק הכוונת במצב ב' — נשאר בפרופיל הג'ויסטיקים (מצב א' בלבד מושפע מהפרדת ההתקנים)
+    const deadzone = jsCfg.deadzone;
     const fineMultiplier = 0.40;
+
+    // עיצוב פלט הסטיק לפי הפרופיל שנבחר: אזור-מת → קנה-מידה מחדש → רגישות (לינארי).
+    // מחזיר ערך בטווח [-1, 1]. שולט עד כמה תזוזה קטנה של הסטיק מתורגמת למהירות.
+    const shapeStick = (v: number, cfg: { deadzone: number; sensitivity: number }) => {
+      const a = Math.abs(v);
+      if (a < cfg.deadzone) return 0;
+      const sign = Math.sign(v);
+      // מנרמלים כך שממש אחרי אזור-המת מתחילים מ-0 (ולא מקפיצה)
+      const mag = ((a - cfg.deadzone) / (1 - cfg.deadzone)) * cfg.sensitivity;
+      return sign * Math.min(1, mag);
+    };
 
     // B3 עבר לשמש את מחזור ה-POV (ב-App.tsx). כאן הוא כבר לא מחליף מצב ניהוג.
     const b3Pressed = btnsRight?.[3]?.pressed || false;
@@ -224,15 +247,14 @@ export function Robot({ hideVisuals = false }: { hideVisuals?: boolean }) {
       // שני ג'ויסטיקים גדולים מחוברים: כל אחד שולט על זחל אחד (כמו קודם).
       // רק שלט PS אחד (DualSense) מזוהה: סטיק שמאלי = זחל שמאל, סטיק ימני = זחל ימין.
       if (axesRight) {
-        mainLeft = -axesLeft[1];
-        mainRight = -axesRight[1];
+        mainLeft = shapeStick(-axesLeft[1], cfgFor(gpLeft));
+        mainRight = shapeStick(-axesRight[1], cfgFor(gpRight));
       } else if (axesLeft) {
         // שלט יחיד: שני הסטיקים על אותו pad. ציר 1 = סטיק שמאלי, ציר 3 = סטיק ימני.
-        mainLeft = -(axesLeft[1] ?? 0);
-        mainRight = -(axesLeft[3] ?? 0);
+        const cfg = cfgFor(gpLeft);
+        mainLeft = shapeStick(-(axesLeft[1] ?? 0), cfg);
+        mainRight = shapeStick(-(axesLeft[3] ?? 0), cfg);
       }
-      if (Math.abs(mainLeft) < deadzone) mainLeft = 0;
-      if (Math.abs(mainRight) < deadzone) mainRight = 0;
     } else {
       // מצב ב': ניהוג גס דרך כפתורים 10/12 — מושתק כשתפריט הלייאאוט פתוח.
       if (axesRight && !layoutMenuOpen) {

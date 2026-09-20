@@ -17,18 +17,44 @@ const DEG2RAD = Math.PI / 180;
 const DRONE_CAM_OFFSET: [number, number, number] = [0, -0.02, 0.16];
 const DRONE_CAM_ROT: [number, number, number] = [0, -15, 0];
 
-// Where the drone hovers relative to the UGV (world space): up and slightly behind.
-const HOVER_OFFSET = new THREE.Vector3(0, 6, 4);
+// Where the drone hovers relative to the UGV (world space) during coupling/follow:
+// ~3m behind and ~4m above the robot.
+const HOVER_OFFSET = new THREE.Vector3(0, 3.5, 4);
 // How quickly the drone chases the hover target (higher = snappier follow).
 const FOLLOW_RATE = 2.5;
 // מהירות מעקב מקסימלית (מ'/ש') — כדי שהדבקה ממרחק תיקח כמה שניות ולא תהיה קפיצה לא-מציאותית.
 const FOLLOW_MAX_SPEED = 8;
 // Manual flight speed (m/s)
 const FLY_SPEED = 7;
+// מהירות טיפוס/ירידה בגובה עם ההאט — במצב *לא מצומד* (מ'/ש').
+const DRONE_CLIMB_SPEED = 3;
+// ===== גובה הרחפן ב*צימוד* — פרמטרים נפרדים לגמרי מהמצב הלא-מצומד =====
+const DRONE_LINK_CLIMB_SPEED = 3;   // מהירות טיפוס/ירידה בצימוד (מ'/ש')
+const LINK_HEIGHT_SPRING_K   = 100;  // רכות/חדות התגובה בצימוד (גבוה = חד ומהיר, נמוך = רך ואיטי)
+const LINK_HEIGHT_SPRING_ZETA = 0.8; // overshoot/אלסטיות בצימוד (נמוך = יותר אלסטי)
 // היסט הישיבה של הרחפן על החלק האחורי של הרובוט (במרחב המקומי של הרובוט).
 const DRONE_REST_OFFSET = new THREE.Vector3(0, 0.28, 0.45); // מעט מעל ומאחור
 const DRONE_REST_SCALE = 0.6;   // הקטנה נראותית כדי שיישב יפה
 const LAUNCH_SPEED = 2;         // מהירות ההמראה האנכית (מ'/ש')
+
+// ===== ריכוך אלסטי (spring-damper) לתחושת אינרציה =====
+// המיקום/הזווית בפועל "רודפים" אחרי ערך-היעד דרך קפיץ מרוסן:
+// zeta < 1 → overshoot קל והתנדנדות עדינה בתחילת/סוף התנועה ובהתייצבות המצלמה.
+// K קובע כמה מהר מתכנסים (גבוה יותר = תגובה חדה יותר, פחות "צף").
+const MOVE_SPRING_K = 45,  MOVE_SPRING_ZETA = 0.6;  // תנועת הרחפן
+const PITCH_SPRING_K = 10, PITCH_SPRING_ZETA = 0.74; // יישור זווית הגוף/מצלמה
+// צעד קפיץ חצי-מרומז (symplectic Euler) — יציב גם בקצב פריימים משתנה.
+function springStep(x: number, target: number, v: number, dt: number, k: number, zeta: number): [number, number] {
+  const c = 2 * zeta * Math.sqrt(k);
+  const nv = v + (k * (target - x) - c * v) * dt;
+  return [x + nv * dt, nv];
+}
+// חזרת הצלב המעוגל למרכז כשלא מטיסים לכיוונו (בדומה לצלב הכוונת ברובוט).
+const DRONE_AIM_IDLE_DELAY = 2.5; // שניות בלי נגיעה/הדק עד שהעיגול מתחיל לחזור למרכז
+const DRONE_AIM_IDLE_TAU   = 0.35; // שניות — כמה מהר הוא חוזר
+// ביציאה מצימוד — המצלמה מתיישרת בהדרגה לאופק (זווית המנוחה של ההטסה הידנית).
+const DRONE_LEVEL_GIMBAL_PITCH = 18; // הזווית שבה המצלמה על האופק (כמו במצב ידני רגיל)
+const GIMBAL_LEVEL_RATE = 3;         // כמה מהר מתיישרת לאופק ביציאה מצימוד (גבוה = מהיר יותר)
 // מזהה שלט PlayStation (DualSense/DualShock). רק כשהוא מחובר — מיפוי הרחפן-שלט פעיל.
 const isPsPad = (p: Gamepad | null) =>
   !!p && /dualsense|dualshock|wireless controller|054c|sony/i.test(p.id);
@@ -60,12 +86,45 @@ function decodeHatAxis(v: number | undefined): { x: number; y: number } {
   return map[idx] || { x: 0, y: 0 };
 }
 
+// משלב את שני ההאטים (ימין+שמאל) לכיוון אחד — כך הגובה/הסטה עובדים מכל ג'ויסטיק.
+function combinedHat(a: number | undefined, b: number | undefined): { x: number; y: number } {
+  const ha = decodeHatAxis(a), hb = decodeHatAxis(b);
+  return {
+    x: Math.max(-1, Math.min(1, ha.x + hb.x)),
+    y: Math.max(-1, Math.min(1, ha.y + hb.y)),
+  };
+}
+
 export function DroneControls() {
   const keys = useKeyboard();
   const prevFollowBtn = useRef(false); // מצב הכפתור האפור בפריים הקודם (לזיהוי רגע לחיצה)
+  const prevControllingDrone = useRef(false); // האם שלטנו ברחפן בפריים הקודם (לזיהוי מעבר)
+  // מצב הריכוך האלסטי של תנועת הרחפן (ריחוף ידני עם ג'ויסטיקים/מקלדת):
+  const targetPos = useRef<[number, number, number]>([0, 0, 0]);      // מיקום-הפקודה (יעד הקפיץ)
+  const posVel = useRef<[number, number, number]>([0, 0, 0]);          // מהירות הקפיץ
+  const lastWritten = useRef<[number, number, number] | null>(null);   // המיקום שכתבנו לאחרונה (לזיהוי שינוי חיצוני)
+  const bodyPitchVel = useRef(0);                                      // מהירות קפיץ ליישור זווית הגוף
+  const aimIdleTime = useRef(0);                                       // כמה זמן העיגול "בטל" (לחזרה למרכז)
+  const followHeightVel = useRef(0);                                   // מהירות קפיץ לגובה הרחפן בצימוד
+  const prevDroneManual = useRef(true);                                // מצב הצימוד בפריים הקודם (לזיהוי יציאה מצימוד)
+  const levelingGimbal = useRef(false);                                // האם המצלמה כרגע מתיישרת לאופק לאחר יציאה מצימוד
 
   useFrame((_, delta) => {
     const s = useTelemetryStore.getState();
+
+    // ===== ניתוק צימוד אוטומטי: מעבר לשליטה בחלונית הרחפן =====
+    // אם הצימוד פעיל (מעקב) והמשתמש עבר עכשיו לשלוט בחלונית הרחפן,
+    // זה אומר שהוא רוצה לנהג את הרחפן — ולכן הצימוד נפסק מיד.
+    // מזהים *מעבר* (false→true) כדי לא לנתק ברגע הפעלת הצימוד עצמו.
+    const controllingDroneNow = s.isControllingDrone();
+    if (!s.droneManual && controllingDroneNow && !prevControllingDrone.current) {
+      s.setDroneLink(false); // droneManual → true, הרחפן עובר לריחוף/ניהוג ידני
+    }
+    prevControllingDrone.current = controllingDroneNow;
+
+    // יציאה מצימוד (מעבר droneManual: false→true) → מסמנים שהמצלמה תתיישר לאופק בהדרגה.
+    if (s.droneManual && !prevDroneManual.current) levelingGimbal.current = true;
+    prevDroneManual.current = s.droneManual;
 
     // ===== מקרה מיוחד: צימוד פעיל + שליטה על הרובוט + Thrustmaster ב' + פריסה מפוצלת =====
     // רק אז — סטיק שמאל שולט במצלמת הרחפן במקביל, בלי להעביר שליטה.
@@ -110,14 +169,44 @@ export function DroneControls() {
       const sticks = pads.filter(p => p && !isWheelP(p) && !isPsP(p)) as Gamepad[]; // Thrustmaster בלבד
       const hasThrustmaster = sticks.length > 0;
 
-      if (!s.droneManual && s.steerMode === 'B' && splitWithBoth && hasThrustmaster) {
+      // שליטה בזווית מצלמת הרחפן עם סטיק שמאל, במקביל לנהיגה ברובוט — גם בצימוד וגם בלעדיו,
+      // כל עוד השליטה על הרובוט (בלי להעביר שליטה לרחפן). דורש פריסה עם חלונית רחפן גלויה.
+      if (s.steerMode === 'B' && splitWithBoth && hasThrustmaster && s.droneLaunched) {
         const gpL = sticks[0] || null;
         const lx = gpL?.axes?.[0] ?? 0, ly = gpL?.axes?.[1] ?? 0;
         const DZ = 0.12, YR = 70, PR = 55;
         let yaw = s.droneGimbalYaw, pitch = s.droneGimbalPitch;
         if (Math.abs(lx) > DZ) yaw   -= lx * YR * delta;
-        if (Math.abs(ly) > DZ) pitch -= ly * PR * delta;
+        // דחיפה = הורדת הזווית, משיכה = הרמת הזווית — תואם לכיוון הזזת הצלב המעוגל.
+        if (Math.abs(ly) > DZ) pitch += ly * PR * delta;
         if (yaw !== s.droneGimbalYaw || pitch !== s.droneGimbalPitch) s.setDroneGimbal(yaw, pitch);
+
+        // גובה הרחפן עם ההאט (משני הג'ויסטיקים) — פעיל גם בצימוד וגם בלעדיו.
+        const hatLink = combinedHat(sticks[1]?.axes?.[9], sticks[0]?.axes?.[9]);
+        if (hatLink.y !== 0) {
+          if (!s.droneManual) {
+            // צימוד: מפקד את יעד גובה המעקב (הגובה בפועל זוחל אליו ברכוך, למטה).
+            s.setDroneFollowHeightTarget(s.droneFollowHeightTarget - hatLink.y * DRONE_LINK_CLIMB_SPEED * delta);
+          } else {
+            // בלי צימוד: הרחפן מרחף — משנים ישירות את גובהו המוחלט.
+            const [dx, dy, dz] = s.dronePosition;
+            const ny = Math.max(0.5, Math.min(40, dy - hatLink.y * DRONE_CLIMB_SPEED * delta));
+            if (ny !== dy) s.setDronePosition([dx, ny, dz]);
+          }
+        }
+      }
+
+      // ריכוך גובה הצימוד: הגובה בפועל זוחל אל היעד דרך אותו קפיץ כמו בתנועה הידנית,
+      // כדי שהתחושה והמהירות יהיו זהות למצב הלא-מצומד (ולא "קופצני" בגלל מערכת המעקב).
+      if (!s.droneManual) {
+        const [no, nv] = springStep(
+          s.droneFollowHeightOffset, s.droneFollowHeightTarget, followHeightVel.current,
+          delta, LINK_HEIGHT_SPRING_K, LINK_HEIGHT_SPRING_ZETA,
+        );
+        followHeightVel.current = nv;
+        if (Math.abs(no - s.droneFollowHeightOffset) > 1e-5) s.setDroneFollowHeightOffset(no);
+      } else {
+        followHeightVel.current = 0;
       }
       return; // כל שאר השליטה על הרחפן לא רצה כשלא שולטים בו
     }
@@ -127,7 +216,7 @@ export function DroneControls() {
     const AIM_PX_RATE = 360, AIM_MAX_PX = 300, STICK_DEADZONE = 0.12;
     const STICK_CAM_YAW_RATE = 70, STICK_CAM_PITCH_RATE = 55; // סטיק שמאל → מצלמה במצב מעקב
     const STRAFE_GAIN = 1.6, VERT_GAIN = 0.9;
-    const HAT_STRAFE_RATE = 1.0, HAT_LIFT_RATE = 1.0, DIFF_YAW_RATE = 1.4;
+    const HAT_STRAFE_RATE = 1.0, DIFF_YAW_RATE = 1.4;
 
     // --- מכשירים ---
     const allPads = navigator.getGamepads();
@@ -146,18 +235,55 @@ export function DroneControls() {
 
 
 
+    // ===== האם הרחפן מוטס כרגע (ג'ויסטיקים, מצב ב', ריחוף ידני)? =====
+    // "מוטס" = יש פקד תנועה פעיל: הדק (B0), ניהוג דיפרנציאלי (B6/B8 בכל צד),
+    // האט (ציר 9), או מקשי טיסה במקלדת. כשאין אף אחד מהם — הרחפן עומד במקום.
+    const isTm = gpLeft && !isPsPad(gpLeft); // ג'ויסטיק Thrustmaster (לא שלט PS)
+    let droneFlying = false;
+    if (s.droneManual && s.steerMode === 'B' && isTm) {
+      const triggerHeld = bt?.[0]?.pressed || false;
+      const diffDriveHeld =
+        (bt?.[6]?.pressed || bt?.[8]?.pressed || btL?.[6]?.pressed || btL?.[8]?.pressed) || false;
+      const hatFly = combinedHat(ax?.[9], gpLeft?.axes?.[9]);
+      const hatHeld = hatFly.x !== 0 || hatFly.y !== 0;
+      const kbFly = !!(k['KeyI'] || k['KeyK'] || k['KeyU'] || k['KeyO'] || k['Space'] || k['ControlLeft'] || k['ControlRight']);
+      droneFlying = triggerHeld || diffDriveHeld || hatHeld || kbFly;
+    }
+
     // ===== גימבל =====
     let yaw = s.droneGimbalYaw, pitch = s.droneGimbalPitch;
     if (k['ArrowLeft']) yaw += YAW_RATE * delta;
     if (k['ArrowRight']) yaw -= YAW_RATE * delta;
     if (k['ArrowUp']) pitch += PITCH_RATE * delta;
     if (k['ArrowDown']) pitch -= PITCH_RATE * delta;
-    // במצב מעקב (קישור): סטיק שמאל שולט רק במצלמה, ותו לא
-    if (!s.droneManual) {
+    // סטיק שמאל שולט בזווית מצלמת הרחפן:
+    //   • במצב מעקב (צימוד) — תמיד.
+    //   • בריחוף ידני (ג'ויסטיקים, מצב ב') — רק כשהרחפן עומד במקום ואינו מוטס
+    //     (כל עוד ג'ויסטיק ימין מטיס אותו, זווית המצלמה לא זזה).
+    const leftStickAimsCam = !s.droneManual || (s.steerMode === 'B' && isTm && !droneFlying);
+    if (leftStickAimsCam) {
       const lx = gpLeft?.axes?.[0] ?? 0, ly = gpLeft?.axes?.[1] ?? 0;
       if (Math.abs(lx) > STICK_DEADZONE) yaw   -= lx * STICK_CAM_YAW_RATE * delta;
-      if (Math.abs(ly) > STICK_DEADZONE) pitch -= ly * STICK_CAM_PITCH_RATE * delta;
+      // דחיפה = הורדת הזווית, משיכה = הרמת הזווית — תואם לכיוון הזזת הצלב המעוגל.
+      if (Math.abs(ly) > STICK_DEADZONE) pitch += ly * STICK_CAM_PITCH_RATE * delta;
     }
+
+    // לאחר יציאה מצימוד — המצלמה מתיישרת בהדרגה לאופק, אלא אם המשתמש מכוון אותה בעצמו.
+    if (levelingGimbal.current) {
+      const userAiming =
+        k['ArrowUp'] || k['ArrowDown'] ||
+        (leftStickAimsCam && Math.abs(gpLeft?.axes?.[1] ?? 0) > STICK_DEADZONE);
+      if (userAiming) {
+        levelingGimbal.current = false;
+      } else {
+        pitch += (DRONE_LEVEL_GIMBAL_PITCH - pitch) * Math.min(1, delta * GIMBAL_LEVEL_RATE);
+        if (Math.abs(pitch - DRONE_LEVEL_GIMBAL_PITCH) < 0.1) {
+          pitch = DRONE_LEVEL_GIMBAL_PITCH;
+          levelingGimbal.current = false;
+        }
+      }
+    }
+
     if (yaw !== s.droneGimbalYaw || pitch !== s.droneGimbalPitch) s.setDroneGimbal(yaw, pitch);
 
     // ===== זום: מקלדת בלבד =====
@@ -168,23 +294,40 @@ export function DroneControls() {
 
     // ===== הצלב המעוגל — סטיק ימין מזיז אותו רק בריחוף ידני =====
     let aimX = s.droneAimX, aimY = s.droneAimY;
+    let touchingAim = false;
     if (s.droneManual && ax) {
       const sx = ax[0] ?? 0, sy = ax[1] ?? 0;
-      if (Math.abs(sx) > STICK_DEADZONE) aimX += sx * AIM_PX_RATE * delta;
-      if (Math.abs(sy) > STICK_DEADZONE) aimY -= sy * AIM_PX_RATE * delta; // משיכה → צלב למעלה, דחיפה → למטה
+      if (Math.abs(sx) > STICK_DEADZONE) { aimX += sx * AIM_PX_RATE * delta; touchingAim = true; }
+      if (Math.abs(sy) > STICK_DEADZONE) { aimY -= sy * AIM_PX_RATE * delta; touchingAim = true; } // משיכה → צלב למעלה, דחיפה → למטה
     }
+
+    // חזרה הדרגתית של העיגול אל המרכז כשלא מטיסים לכיוונו:
+    // ההדק לא לחוץ (לא "נוסעים" לכיוון) והסטיק אינו מוזז — בדיוק כמו צלב הכוונת ברובוט.
+    const aimTriggerHeld = bt?.[0]?.pressed || false;
+    if (s.droneManual && !aimTriggerHeld && !touchingAim) {
+      aimIdleTime.current += delta;
+      if (aimIdleTime.current > DRONE_AIM_IDLE_DELAY) {
+        const decay = 1 - Math.exp(-delta / DRONE_AIM_IDLE_TAU);
+        aimX -= aimX * decay;
+        aimY -= aimY * decay;
+      }
+    } else {
+      aimIdleTime.current = 0;
+    }
+
     aimX = Math.max(-AIM_MAX_PX, Math.min(AIM_MAX_PX, aimX));
     aimY = Math.max(-AIM_MAX_PX, Math.min(AIM_MAX_PX, aimY));
 
     // ===== טיסה — רק בריחוף ידני =====
     if (s.droneManual) {
-      const [px, py, pz] = s.dronePosition;
-      let nx = px, ny = py, nz = pz;
       let bodyYaw = s.droneYaw;
+      let bodyPitch = s.droneBodyPitch;   // הטיית האף מעלה/מטה (מתכנסת אל העיגול בזמן הדק)
       const step = FLY_SPEED * delta;
 
-            // ===== ניהוג זחלים בשלט PS — רק כשמחובר שלט PS וגם מצב הניהוג 'A' =====
+            // ===== ניהוג זחלים בשלט PS — רק כשמחובר שלט PS וגם מצב הניהוג 'A' (בלי ריכוך) =====
       if (psPad && s.steerMode === 'A') {
+        const [px, py, pz] = s.dronePosition;
+        let nx = px, ny = py, nz = pz;
         const pax = psPad.axes;
         const pbt = psPad.buttons;
         const DZ = 0.12;
@@ -215,8 +358,23 @@ export function DroneControls() {
           s.setDroneYaw(bodyYaw);
           s.setDronePosition([nx, Math.max(0.5, Math.min(40, ny)), nz]);
         }
+        lastWritten.current = null; // בכניסה חזרה לג'ויסטיקים — לסנכרן מחדש את יעד הקפיץ
         return;
       }
+
+      // ===== נתיב ג'ויסטיקים (Thrustmaster) + מקלדת — עם ריכוך אלסטי =====
+      // הפקדים בונים את *מיקום-הפקודה* (targetPos), והמיקום בפועל רודף אחריו דרך קפיץ.
+      // אם המיקום שוּנה מבחוץ (מעקב/איפוס/שלט PS) — מסנכרנים מחדש את היעד ומאפסים מהירות.
+      const curPos = s.dronePosition;
+      if (!lastWritten.current ||
+          curPos[0] !== lastWritten.current[0] ||
+          curPos[1] !== lastWritten.current[1] ||
+          curPos[2] !== lastWritten.current[2]) {
+        targetPos.current = [curPos[0], curPos[1], curPos[2]];
+        posVel.current = [0, 0, 0];
+      }
+      const [px, py, pz] = targetPos.current;
+      let nx = px, ny = py, nz = pz;
 
       // ניהוג דיפרנציאלי (B6=קדימה, B8=אחורה, בכל צד)
       const rightSide = bt?.[6]?.pressed ? 1 : (bt?.[8]?.pressed ? -1 : 0);
@@ -229,10 +387,9 @@ export function DroneControls() {
       const rX =  Math.cos(bodyYaw), rZ = -Math.sin(bodyYaw);
       nx += fX * drive * step; nz += fZ * drive * step;
 
-      // האט (AXIS 9): מעלה/מטה = גובה, שמאל/ימין = הצידה
-      const hatV = (ax?.[9] !== undefined) ? ax[9] : gpLeft?.axes?.[9];
-      const hat = decodeHatAxis(hatV);
-      ny += -hat.y * HAT_LIFT_RATE * step;
+      // האט (AXIS 9): מעלה/מטה = גובה, שמאל/ימין = הצידה — עובד משני הג'ויסטיקים.
+      const hat = combinedHat(ax?.[9], gpLeft?.axes?.[9]);
+      ny += -hat.y * DRONE_CLIMB_SPEED * delta;          // גובה — קצב נשלט ע"י DRONE_CLIMB_SPEED
       nx += rX * hat.x * HAT_STRAFE_RATE * step;
       nz += rZ * hat.x * HAT_STRAFE_RATE * step;
 
@@ -241,10 +398,10 @@ export function DroneControls() {
       if (k['KeyK']) { nx -= fX * step; nz -= fZ * step; }
       if (k['KeyU']) { nx -= rX * step; nz -= rZ * step; }
       if (k['KeyO']) { nx += rX * step; nz += rZ * step; }
-      if (k['Space']) ny += step;
-      if (k['ControlLeft'] || k['ControlRight']) ny -= step;
+      if (k['Space']) ny += DRONE_CLIMB_SPEED * delta;
+      if (k['ControlLeft'] || k['ControlRight']) ny -= DRONE_CLIMB_SPEED * delta;
 
-      // --- ההדק: אופקי = סיבוב הגוף (מתכנס); אנכי = גובה שנשאר (לא מתכנס) ---
+      // --- ההדק: אופקי = סיבוב הגוף (מתכנס); אנכי = הטיית האף אל העיגול ---
       const trigger = bt?.[0]?.pressed || false;
       if (trigger) {
         const AIM_MAX_ANGLE = 0.7, DRIVE_SPEED = 1.0, TURN_SLOWDOWN = 0.3, DRONE_TURN_RATE = 2.2;
@@ -259,28 +416,59 @@ export function DroneControls() {
         aimX -= (turnAngle / AIM_MAX_ANGLE) * AIM_MAX_PX;
         aimX = Math.max(-AIM_MAX_PX, Math.min(AIM_MAX_PX, aimX));
 
-        // ----- טיסה קדימה לכיוון הגוף (מואטת בפנייה חדה) -----
+        // ----- ציר אנכי: מתנהג כמו האופקי — הגוף מטה את האף אל העיגול (עד ±45°),
+        //       והעיגול מתכנס אל מרכז המצלמה. -----
+        const PITCH_MAX_ANGLE = Math.PI / 4;              // הגבלת הטיה אנכית: 45° מעלה/מטה
+        const errV = -ndy * PITCH_MAX_ANGLE;              // עיגול למעלה (ndy<0) → אף מעלה (errV>0)
+        const pitchSteer = Math.max(-1, Math.min(1, errV * STRAFE_GAIN));
+        const pitchAngle = pitchSteer * DRONE_TURN_RATE * delta;
+        bodyPitch += pitchAngle;
+        bodyPitch = Math.max(-PITCH_MAX_ANGLE, Math.min(PITCH_MAX_ANGLE, bodyPitch));
+        aimY += (pitchAngle / PITCH_MAX_ANGLE) * AIM_MAX_PX;   // התכנסות אנכית של העיגול למרכז
+        aimY = Math.max(-AIM_MAX_PX, Math.min(AIM_MAX_PX, aimY));
+
+        // ----- טיסה בכיוון האף התלת-ממדי: אופקי לפי היאו, אנכי לפי הפיץ' -----
         const camYaw = bodyYaw + s.droneGimbalYaw * DEG2RAD;
         const cfX = -Math.sin(camYaw), cfZ = -Math.cos(camYaw);
         const drv = DRIVE_SPEED * (1 - TURN_SLOWDOWN * Math.abs(steer));
-        nx += cfX * drv * step; nz += cfZ * drv * step;
+        const horiz = drv * Math.cos(bodyPitch);
+        nx += cfX * horiz * step; nz += cfZ * horiz * step;
+        ny += Math.sin(bodyPitch) * drv * step;
 
-        // ----- ציר אנכי: "מצערת גובה" — בקצה הצלב הרחפן ממשיך לעלות/לרדת בקצב מלא -----
-        // עד 70% מהטווח: עלייה יחסית. מעבר לזה (הצלב קרוב לקצה): קצב מלא וקבוע, ממשיך כל עוד שם.
-        const vMag = Math.abs(ndy);
-        const vDir = ndy < 0 ? 1 : -1; // צלב למעלה (ndy שלילי) → עלייה (+)
-        let climb;
-        if (vMag > 0.7) climb = vDir;
-        else climb = vDir * (vMag / 0.7);
-        ny += climb * VERT_GAIN * step;
-
-        // שומרים רק את aimX המעודכן (המתכנס); aimY נשאר איפה ששמת אותו
         s.setDroneAim(aimX, aimY);
+        s.setDroneBodyPitch(bodyPitch);
+        bodyPitchVel.current = pitchAngle / Math.max(delta, 1e-4); // מהירות רגעית — להמשך חלק בשחרור
+      } else {
+        // עוזבים את ההדק — יישור אלסטי של הגוף/מצלמה חזרה ל-0 (ריכוך + overshoot קל)
+        if (Math.abs(bodyPitch) > 1e-4 || Math.abs(bodyPitchVel.current) > 1e-4) {
+          const [np, nv] = springStep(bodyPitch, 0, bodyPitchVel.current, delta, PITCH_SPRING_K, PITCH_SPRING_ZETA);
+          bodyPitch = np; bodyPitchVel.current = nv;
+          if (Math.abs(bodyPitch) < 1e-4 && Math.abs(bodyPitchVel.current) < 1e-4) { bodyPitch = 0; bodyPitchVel.current = 0; }
+          s.setDroneBodyPitch(bodyPitch);
+        }
       }
 
-      if (nx !== px || ny !== py || nz !== pz || bodyYaw !== s.droneYaw) {
-        s.setDroneYaw(bodyYaw);
-        s.setDronePosition([nx, Math.max(0.5, Math.min(40, ny)), nz]);
+      // מיקום-הפקודה (יעד הקפיץ), עם גבול גובה
+      ny = Math.max(0.5, Math.min(40, ny));
+      targetPos.current = [nx, ny, nz];
+
+      // ===== ריכוך אלסטי: המיקום בפועל רודף אחרי מיקום-הפקודה עם overshoot קל =====
+      // ease-in בתחילת התנועה, ease-out + החלקה קלה בעצירה.
+      const [rax, rvx] = springStep(curPos[0], nx, posVel.current[0], delta, MOVE_SPRING_K, MOVE_SPRING_ZETA);
+      let   [ray, rvy] = springStep(curPos[1], ny, posVel.current[1], delta, MOVE_SPRING_K, MOVE_SPRING_ZETA);
+      const [raz, rvz] = springStep(curPos[2], nz, posVel.current[2], delta, MOVE_SPRING_K, MOVE_SPRING_ZETA);
+      if (ray < 0.5) { ray = 0.5; rvy = 0; } else if (ray > 40) { ray = 40; rvy = 0; } // גבול קשיח לגובה
+      posVel.current = [rvx, rvy, rvz];
+
+      if (bodyYaw !== s.droneYaw) s.setDroneYaw(bodyYaw);
+
+      const moved =
+        Math.abs(rax - curPos[0]) > 1e-4 || Math.abs(ray - curPos[1]) > 1e-4 || Math.abs(raz - curPos[2]) > 1e-4;
+      if (moved) {
+        s.setDronePosition([rax, ray, raz]);
+        lastWritten.current = [rax, ray, raz];
+      } else {
+        posVel.current = [0, 0, 0]; // התייצב לגמרי
       }
     }
 
@@ -332,8 +520,10 @@ export function DroneVisuals({ camera = false, forceActive = false }: { camera?:
         groupRef.current.position.set(restX, restY, restZ);
         groupRef.current.quaternion.copy(_bodyQuat);
         groupRef.current.scale.setScalar(DRONE_REST_SCALE);
-        // רק העותק שמחזיק את המצלמה מסנכרן את ה-store, כדי שההמראה תתחיל מהמקום הנכון
-        if (camera) s.setDronePosition([restX, restY, restZ]);
+        // מסנכרנים את מיקום הישיבה ל-store בכל פריסה (גם בלי חלונית רחפן),
+        // כדי שההמראה תתחיל מהמקום הנכון ותעבוד גם במסך רובוט בלבד.
+        // כל העותקים מחשבים את אותו ערך בדיוק (לפי גוף הרובוט), ולכן אין התנגשות.
+        s.setDronePosition([restX, restY, restZ]);
       }
       return;
     }
@@ -354,7 +544,8 @@ export function DroneVisuals({ camera = false, forceActive = false }: { camera?:
       // HOVER_OFFSET הוא (0, גובה, מרחק-אחורה); מסובבים את המרכיב האופקי לפי כיוון הרובוט
       const backX = Math.sin(robotYaw) * HOVER_OFFSET.z;
       const backZ = Math.cos(robotYaw) * HOVER_OFFSET.z;
-      _hoverTarget.set(_robotPos.x + backX, _robotPos.y + HOVER_OFFSET.y, _robotPos.z + backZ);
+      // גובה = גובה המעקב הבסיסי + כוונון הגובה מההאט בזמן צימוד
+      _hoverTarget.set(_robotPos.x + backX, _robotPos.y + HOVER_OFFSET.y + s.droneFollowHeightOffset, _robotPos.z + backZ);
 
       if (!posInit.current) {
         smoothPos.copy(_hoverTarget);
@@ -407,8 +598,8 @@ export function DroneVisuals({ camera = false, forceActive = false }: { camera?:
 
       groupRef.current.position.set(smoothPos.x, dronePosY, smoothPos.z);
       groupRef.current.quaternion.copy(_bodyQuat);
-      // אף למטה בסיסי + בוב + הרמת אף בטיפוס / הורדת אף בצלילה
-      groupRef.current.rotateX(Math.sin(t * 1.2) * 0.03 - 0.05 + noseTilt);
+      // אף למטה בסיסי + בוב + הרמת אף בטיפוס/צלילה + הטיית הגוף אל העיגול (bodyPitch)
+      groupRef.current.rotateX(Math.sin(t * 1.2) * 0.03 - 0.05 + noseTilt + s.droneBodyPitch);
       groupRef.current.rotateZ(Math.sin(t * 0.9) * 0.04);
     }
 
@@ -424,9 +615,10 @@ export function DroneVisuals({ camera = false, forceActive = false }: { camera?:
       const [ox, oy, oz] = DRONE_CAM_OFFSET;
       const [ryDeg, rpDeg, rrDeg] = DRONE_CAM_ROT;
 
-      // yaw-only body frame for the payload mount (so the bob tilt/roll doesn't
-      // fight the gimbal); camera position offset from the drone body.
-      _yawQuat.copy(_bodyQuat);
+      // מסגרת הגוף למצלמה: יאו + הטיית האף (bodyPitch), בלי הבוב — כדי שהמצלמה
+      // תביט מעלה/מטה יחד עם הטיית הגוף, בדיוק כמו שהיא פונה עם היאו במישור האופקי.
+      _bodyEuler.set(s.droneBodyPitch, bodyYaw, 0);
+      _yawQuat.setFromEuler(_bodyEuler);
       _camOffset.set(ox, oy, oz).applyQuaternion(_yawQuat);
       _camPos.set(smoothPos.x, dronePosY, smoothPos.z).add(_camOffset);
       cam.position.copy(_camPos);

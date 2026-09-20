@@ -5,23 +5,23 @@ import { useGamepads } from '../hooks/useGamepads';
 import { Pov4Panel } from './Pov4Panel';
 import { CompassBar } from './CompassBar';
 
-export function InfoBar({ 
-  showHorizon = true, 
-  showCompass = true, 
-  showAttitude = true,
+export function InfoBar({
+  showHorizon = true,
+  showCompass = true,
   showCenterAttitude = true,
   scale = 1,
   source = 'robot'
-}: { 
-  showHorizon?: boolean; 
-  showCompass?: boolean; 
-  showAttitude?: boolean;
+}: {
+  showHorizon?: boolean;
+  showCompass?: boolean;
   showCenterAttitude?: boolean;
   scale?: number;
   source?: 'robot' | 'drone';
 }) {
-  const pitch = useTelemetryStore(s => s.pitch);
-  const roll = useTelemetryStore(s => s.roll);
+  const robotPitch = useTelemetryStore(s => s.pitch);
+  const robotRoll = useTelemetryStore(s => s.roll);
+  const droneBodyPitch = useTelemetryStore(s => s.droneBodyPitch);
+  const controllingDrone = useTelemetryStore(s => s.isControllingDrone());
   const cameraYaw = useTelemetryStore(s => s.cameraYaw);
   const cameraPitch = useTelemetryStore(s => s.cameraPitch);
   const aimScreenX = useTelemetryStore(s => s.aimScreenX);
@@ -38,23 +38,32 @@ export function InfoBar({
   const [manualPanelOpen, setManualPanelOpen] = useState(true);
     const [povMenuOpen, setPovMenuOpen] = useState(false);
 
+  // === מהו הכלי שבחלונית הזו, והאם החלונית הזו היא זו שבשליטה כרגע ===
+  // האופק והמחוונים שמסביב לצלב עוברים לחלונית שבשליטה, ומציגים את זווית הכלי שבה.
+  const isDrone = source === 'drone';
+  const controlled = isDrone ? controllingDrone : !controllingDrone;
+  const pitch = isDrone ? droneBodyPitch * (180 / Math.PI) : robotPitch;
+  const roll = isDrone ? 0 : robotRoll; // לרחפן אין גלגול משמעותי
+
   // --- קביעת גובה קו האופק לפי סוג המצלמה הפעילה ---
-  let horizonOffset = -135; 
-  
-  if (viewMode === ViewMode.POV1) {
-    horizonOffset = 0;  
+  let horizonOffset = -135;
+
+  if (isDrone) {
+    horizonOffset = 0;        // רחפן: אופק במרכז (אין מצבי POV)
+  } else if (viewMode === ViewMode.POV1) {
+    horizonOffset = 0;
   } else if (viewMode === ViewMode.POV2) {
-    horizonOffset = -100; 
+    horizonOffset = -100;
   } else if (viewMode === ViewMode.POV3) {
-    horizonOffset = -135; 
+    horizonOffset = -135;
   }
 
 
   // === נעילה לפי מצב התצוגה ===
   // POV3 = נעולים לעולם: הצלב והפסים זזים, הנקודות והקשתות קפואות.
   // POV1/POV2 = נעולים לרובוט: הצלב והפסים קפואים, הנקודות והקשתות זזות.
-  const worldLocked = viewMode === ViewMode.POV3;
-  const attitudeWorldLocked = viewMode !== ViewMode.POV4;
+  // הרחפן אינו "נעול-עולם" — המחוונים זזים עם זווית הרחפן.
+  const worldLocked = !isDrone && viewMode === ViewMode.POV3;
   const pitchShift = worldLocked ? 0 : pitch * 4;
   const rollArcRot = worldLocked ? 0 : ((viewMode === ViewMode.POV1 || viewMode === ViewMode.POV2) ? -roll : roll);
   const robotGroupTransform = worldLocked
@@ -90,7 +99,6 @@ export function InfoBar({
   // צבע קווי הגבול לפי קרבה ל-30 מעלות (אזהרה מתחילה ב-20 מעלות)
   const topLimitColor = pitch > 15 ? '#ff3b30' : '#ffffff';
   const bottomLimitColor = pitch < -15 ? '#ff3b30' : '#ffffff';
-  const thinBlackOutline = '1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000';
 
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden">
@@ -215,7 +223,7 @@ export function InfoBar({
             filter: 'drop-shadow(0 0 0.7px rgba(0,0,0,0.6))'
           }}
         ></div>
-        {source === 'robot' && (<>
+        {controlled && (<>
           {/* שכבה קבועה: סולם Pitch נע בתוך חלון (ללא מספרים) */}
           <div
             className="absolute top-1/2 left-1/2 pointer-events-none z-40"
@@ -308,8 +316,8 @@ export function InfoBar({
         </>
       )}
 
-      {/* --- קו אופק דינמי על גבי המסך — לא לרחפן --- */}
-      {showHorizon && source === 'robot' && (
+      {/* --- קו אופק דינמי על גבי המסך — בחלונית שבשליטה (רובוט או רחפן) --- */}
+      {showHorizon && controlled && (
         <div 
           className="absolute top-1/2 left-1/2 pointer-events-none opacity-80 z-30"
           style={{ 
@@ -323,66 +331,6 @@ export function InfoBar({
           <div className="absolute left-16 top-[-1.75px] w-[15px] h-[3.5px] bg-white border border-black/80 origin-left rotate-[135deg]"></div>
         </div>
       )}
-
-      {/* --- מחוון Pitch ו-Roll עגול (מד נטייה) — לא מוצג לרחפן --- */}
-      {showAttitude && source === 'robot' && (
-        <div className="absolute bottom-6 left-6 w-28 h-28 rounded-full border-2 border-white/40 bg-black/30 overflow-hidden z-50 pointer-events-none shadow-[0_4px_20px_rgba(0,0,0,0.5)] backdrop-blur-md">
-          
-          {/* קונטיינר מסתובב בהתאם לגלגול (Roll) */}
-          <div 
-            className="absolute inset-0"
-            style={{ transform: `rotate(${attitudeWorldLocked ? 0 : roll}deg)`, transition: 'transform 0.05s linear' }}
-          >
-            {/* קונטיינר זז למעלה ולמטה בהתאם לעלרוד (Pitch) */}
-            <div 
-              className="absolute w-full"
-              style={{ 
-                height: '400%', 
-                top: '-150%', 
-                transform: `translateY(${attitudeWorldLocked ? 0 : pitch * 1.5}px)`,
-                transition: 'transform 0.05s linear' 
-              }}
-            >
-              {/* שמיים */}
-              <div className="w-full h-1/2 bg-blue-500/70 border-b-[1.5px] border-white/80"></div>
-              {/* אדמה */}
-              <div className="w-full h-1/2 bg-[#8B5A2B]/70"></div>
-              
-              {/* סולם Pitch */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <div className="w-12 h-[1.5px] bg-white/60 mb-5"></div>
-                <div className="w-7 h-[1.5px] bg-white/60 mb-5"></div>
-                
-                <div className="w-7 h-[1.5px] bg-white/60 mt-5"></div>
-                <div className="w-12 h-[1.5px] bg-white/60 mt-5"></div>
-              </div>
-            </div>
-          </div>
-
-          {/* צללית פנימית */}
-          <div className="absolute inset-0 rounded-full border-[3.5px] border-black/20 pointer-events-none shadow-inner"></div>
-
-          {/* סמל הרובוט - מעובה ומוגדל בצבע לבן */}
-          <div 
-            className="absolute top-1/2 left-1/2 w-16 flex items-center justify-between z-10"
-            style={{
-              transform: `translate(-50%, -50%) ${attitudeWorldLocked ? `translateY(${-pitch * 1.5}px) rotate(${roll}deg)` : ''}`.trim(),
-              transition: 'transform 0.05s linear'
-            }}
-          >
-            <div className="w-6 h-[3.5px] bg-white border border-black/80"></div>
-            <div className="w-2 h-2 rounded-full bg-white border border-black/80"></div>
-            <div className="w-6 h-[3.5px] bg-white border border-black/80"></div>
-          </div>
-
-          {/* טקסט הנתונים המספריים - מוסתר כרגע בהערה */}
-          {/* <div className="absolute bottom-2 left-0 w-full text-center text-white font-mono text-[10px] font-bold z-10 tracking-wider" style={{ textShadow: thinBlackOutline }}>
-            P:{pitch}° R:{roll}°
-          </div>
-          */}
-        </div>
-      )}
-
 
     </div>
   );
